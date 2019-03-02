@@ -417,10 +417,11 @@ std::shared_future<void> BasicTaskflow<E>::run_until(WorkGroup& wg, P&& predicat
   for(auto &p: wg._pairs) {
     std::get<Node*>(p)->_work = [&, tf=this](auto& subflow) mutable {
       if(!subflow.empty()) return;
-      
+
       //std::cout << "Framework name: " << std::get<1>(p)->name() << std::endl;
 
       auto sink = subflow.placeholder();
+      sink._node->set_subtask();
 
       PassiveVector<Node*> src;
       PassiveVector<Node*> tgt;
