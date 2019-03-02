@@ -402,7 +402,6 @@ std::shared_future<void> BasicTaskflow<E>::run_until(WorkGroup& wg, P&& predicat
   // create a topology for this run
   auto &tpg = _topologies.emplace_back(wg, std::forward<P>(predicate));
 
-
   // Multi-threaded execution.
   std::scoped_lock lock(wg._mtx);
 

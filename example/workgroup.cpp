@@ -35,9 +35,12 @@ int main(){
   auto F1 = wg.emplace(f1);
   auto F2 = wg.emplace(f2);
   F1.precede(F2);
-  wg.emplace([](){ std::cout << "Glue task\n"; });
+  wg.emplace([](){ std::cout << "Glue task\n"; }).name("Glue task");
 
-  tf.run_until(wg, [iter = 4] () mutable { std::puts("\n"); return iter-- == 0; }, [](){}).get();
+  tf.run_until(wg, [iter = 1] () mutable { std::puts("\n"); return iter-- == 0; }, [](){}).get();
+
+  std::cout << wg.dump() << std::endl;
+  exit(1);
 
   tf.run_n(f1, 3u).get();
   std::puts("\n");

@@ -163,6 +163,9 @@ inline tf::Task WorkGroup::emplace(Framework& framework) {
   auto task = placeholder();
   _graph.back().set_workgroup();
   _pairs.emplace_back(&(_graph.back()), &framework);
+  if(!framework.name().empty()) {
+    task.name(framework.name());
+  }
   return task;
 }
 
