@@ -419,12 +419,13 @@ std::shared_future<void> BasicTaskflow<E>::pipeline_until(Framework& f, P&& pred
 
   f._topologies.push_back(&tpg);
 
-  tf::Node* predicate_node = new Node();
-  predicate_node->_topology = &tpg;
-  predicate_node->_num_dependents = -1;
-  tpg._work = [predicate_node, &f, c{std::move(c)}]() {
+  //tf::Node* predicate_node = new Node();
+  //predicate_node->_topology = &tpg;
+  //predicate_node->_num_dependents = -1;
+  //tpg._work = [predicate_node, &f, c{std::move(c)}]() {
+  tpg._work = [&f, c{std::move(c)}]() {
     printf("Leave\n");
-    delete predicate_node;
+    //delete predicate_node;
     std::invoke(c);
     auto tpg = f._topologies.front();
     f._topologies.pop_front();
@@ -436,9 +437,12 @@ std::shared_future<void> BasicTaskflow<E>::pipeline_until(Framework& f, P&& pred
   //for(auto &s: tpg._sources) {
   //  predicate_node->precede(*s);
   //}
-  predicate_node->set_pipeline();
+  //predicate_node->set_pipeline();
 
-  _schedule(*predicate_node);
+  //_schedule(*predicate_node);
+  
+  tpg._sources.front()->set_pipeline();
+  _schedule(*(tpg._sources.front()));
 
   return tpg._future;
 }
@@ -468,33 +472,35 @@ void BasicTaskflow<E>::Closure::pipeline_mode() {
   const auto num_successors = node->num_successors();
  
   do {
-    if(node->_num_dependents == -1) {
-      if(node->_cur_pipeline == node->_topology->_num_pipeline) {
-        return ;
-      }
-      else {
-        auto stop = std::invoke(node->_topology->_predicate); 
-        if(!stop) {
-          node->_topology->_num_pipeline ++;
-        }
+    ////if(node->_num_dependents == -1) {
+    //if(node->_dependents.size() == 0) {
+    //  if(node->_cur_pipeline == node->_topology->_num_pipeline) {
+    //    return ;
+    //  }
+    //  else {
+    //    auto stop = std::invoke(node->_topology->_predicate); 
+    //    if(!stop) {
+    //      node->_topology->_num_pipeline ++;
+    //    }
 
-        for(auto &s: node->_topology->_sources) {
-          //if(--s->_num_dependents == 0) {
-          //  s->_num_dependents = s->_dependents.size(); 
-            if(s->_num_run.fetch_add(1) == 0) {
-              s->set_pipeline();
-              s->_num_dependents = 0;
-              taskflow->_schedule(*s);
-            }
-          //}
-        }                                          
-        node->_cur_pipeline ++;
-        //node->_num_run = 10;
-        continue;
-      }
-    }
-    else {
+    //    for(auto &s: node->_topology->_sources) {
+    //      //if(--s->_num_dependents == 0) {
+    //      //  s->_num_dependents = s->_dependents.size(); 
+    //        if(s->_num_run.fetch_add(1) == 0) {
+    //          s->set_pipeline();
+    //          s->_num_dependents = 0;
+    //          taskflow->_schedule(*s);
+    //        }
+    //      //}
+    //    }                                          
+    //    node->_cur_pipeline ++;
+    //    //node->_num_run = 10;
+    //    continue;
+    //  }
+    //}
+    //else {
 
+      
       node->_num_dependents = 0;
 
       //if(node->_subgraph.has_value()) {
@@ -503,6 +509,13 @@ void BasicTaskflow<E>::Closure::pipeline_mode() {
       //}
 
       if(!node->is_spawned()) {
+        if(node->_dependents.size() == 0) {
+          auto stop = std::invoke(node->_topology->_predicate); 
+          if(!stop) {
+            node->_topology->_num_pipeline ++;
+          }
+        }
+
         Graph subgraph;
         if(node->_subgraph.has_value() && !node->_subgraph->empty()) {
           subgraph.splice(subgraph.begin(), node->_subgraph.value());
@@ -571,7 +584,7 @@ void BasicTaskflow<E>::Closure::pipeline_mode() {
         }
       }
 
-    }  // End of else
+    //}  // End of else
 
   } while(!last_pipe && node->_num_run.fetch_sub(1) != 1);
 }
