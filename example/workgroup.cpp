@@ -39,6 +39,10 @@ int main(){
 
   tf.run_until(wg, [iter = 4] () mutable { std::puts("\n"); return iter-- == 0; }, [](){}).get();
 
+  tf.run_n(f1, 3u).get();
+  std::puts("\n");
+  tf.run_n(f2, 3u).get();
+
   return 0;
 }
 
