@@ -264,6 +264,8 @@ class FlowBuilder {
     @param A task A
     */
     void gather(std::initializer_list<Task> others, Task A);
+
+    bool empty() const { return _graph.empty(); }
     
   private:
 

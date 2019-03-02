@@ -416,8 +416,9 @@ std::shared_future<void> BasicTaskflow<E>::run_until(WorkGroup& wg, P&& predicat
 
   for(auto &p: wg._pairs) {
     std::get<Node*>(p)->_work = [&, tf=this](auto& subflow) mutable {
+      if(!subflow.empty()) return;
       
-      std::cout << std::get<1>(p)->name() << std::endl;
+      //std::cout << "Framework name: " << std::get<1>(p)->name() << std::endl;
 
       auto sink = subflow.placeholder();
 
@@ -436,10 +437,10 @@ std::shared_future<void> BasicTaskflow<E>::run_until(WorkGroup& wg, P&& predicat
       }
 
       sink.work([tgt{std::move(tgt)}](){
-        std::puts("=======>  Clear");
-        //for(auto& t: tgt) {
-        //  t->_successors.clear();
-        //}
+        //std::puts("=======>  Clear");
+        for(auto& t: tgt) {
+          t->_successors.clear();
+        }
       });
       subflow.join();
 
@@ -468,7 +469,6 @@ std::shared_future<void> BasicTaskflow<E>::run_until(WorkGroup& wg, P&& predicat
 
       // If there is another run (interleave between lock)
       if(wg._topologies.size() > 1) {
-
         // Set the promise
         wg._topologies.front()->_promise.set_value();
         wg._topologies.pop_front();
@@ -602,7 +602,8 @@ BasicTaskflow<E>::Closure::Closure(BasicTaskflow& t, Node& n) :
 // Operator ()
 template <template <typename...> typename E>
 void BasicTaskflow<E>::Closure::operator () () {
-   if(node->is_pipeline()) {
+  if(node->is_pipeline()) {
+    assert(false);
     pipeline_mode();
   }
   else {
@@ -821,7 +822,7 @@ void BasicTaskflow<E>::Closure::normal_mode() {
     if(--(node->_topology->_num_sinks) == 0) {
 
       // This is the last executing node 
-      bool is_framework = node->_topology->_handle.index() == 1;
+      bool is_framework = node->_topology->_handle.index() != 0;
       if(node->_topology->_work != nullptr) {
         std::invoke(node->_topology->_work);
       }
