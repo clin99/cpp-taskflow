@@ -35,6 +35,7 @@ class Node {
 
   constexpr static int SPAWNED = 0x1;
   constexpr static int SUBTASK = 0x2;
+  constexpr static int PIPELINE = 0x4;
 
   public:
 
@@ -57,8 +58,16 @@ class Node {
     // Status-related functions
     bool is_spawned() const { return _status & SPAWNED; }
     bool is_subtask() const { return _status & SUBTASK; }
-    void set_spawned()  { _status |= SPAWNED; }
-    void set_subtask()  { _status |= SUBTASK; }
+    bool is_pipeline() const { return _status & PIPELINE; }
+
+    void set_spawned()   { _status |= SPAWNED; }
+    void set_subtask()   { _status |= SUBTASK; }
+    void set_pipeline()  { _status |= PIPELINE; }
+
+    void unset_spawned()   { _status &= ~SPAWNED; }
+    void unset_subtask()   { _status &= ~SUBTASK; }
+    void unset_pipeline()  { _status &= ~PIPELINE; }
+
     void clear_status() { _status = 0; }
 
   private:
@@ -76,6 +85,10 @@ class Node {
     Topology* _topology;
 
     int _status {0};
+
+    // Pipeline 
+    std::atomic<unsigned> _num_run {0};
+    unsigned _cur_pipeline {0};
 };
 
 // Constructor

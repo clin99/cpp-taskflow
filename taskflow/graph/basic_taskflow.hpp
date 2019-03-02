@@ -49,7 +49,12 @@ class BasicTaskflow : public FlowBuilder {
 
     Closure& operator = (const Closure&) = default;
     
-    void operator ()() const;
+    void operator ()() ;
+
+    void normal_mode() ;
+    void pipeline_mode() ;
+
+    bool execute_pipeline_task(Graph&);
 
     BasicTaskflow* taskflow {nullptr};
     Node*          node     {nullptr};
@@ -237,6 +242,11 @@ class BasicTaskflow : public FlowBuilder {
     template<typename P, typename C>
     std::shared_future<void> run_until(Framework& framework, P&& predicate, C&& callable);
 
+
+    template<typename P, typename C>
+    std::shared_future<void> pipeline_until(Framework& framework, P&& predicate, C&& callable);
+
+
   private:
     
     Graph _graph;
@@ -247,6 +257,7 @@ class BasicTaskflow : public FlowBuilder {
 
     void _schedule(Node&);
     void _schedule(PassiveVector<Node*>&);
+
 };
 
 // ============================================================================
@@ -374,6 +385,65 @@ std::shared_future<void> BasicTaskflow<E>::run_until(Framework& f, P&& predicate
   return tpg._future;
 }
 
+
+// Function: pipeline_until
+template <template <typename...> typename E>
+template <typename P, typename C>
+std::shared_future<void> BasicTaskflow<E>::pipeline_until(Framework& f, P&& predicate, C&& c) {
+  if(std::invoke(predicate)) {
+    return std::async(std::launch::deferred, [](){}).share();
+  }
+
+  // create a topology for this run
+  auto &tpg = _topologies.emplace_back(f, std::forward<P>(predicate));
+
+  // Iterative execution to avoid stack overflow
+  if(num_workers() == 0) {
+
+    // Clear last execution data & Build precedence between nodes and target
+    tpg._bind(f._graph);
+
+    do {
+      _schedule(tpg._sources);
+      tpg._recover_num_sinks();
+    } while(!std::invoke(tpg._predicate));
+
+    std::invoke(c);
+    tpg._promise.set_value();
+
+    return tpg._future;  
+  }
+
+  // Multi-threaded execution.
+  std::scoped_lock lock(f._mtx);
+
+  f._topologies.push_back(&tpg);
+
+  tf::Node* predicate_node = new Node();
+  predicate_node->_topology = &tpg;
+  predicate_node->_num_dependents = -1;
+  tpg._work = [predicate_node, &f, c{std::move(c)}]() {
+    printf("Leave\n");
+    delete predicate_node;
+    std::invoke(c);
+    auto tpg = f._topologies.front();
+    f._topologies.pop_front();
+    tpg->_promise.set_value();
+  };
+
+  // Clear last execution data & Build precedence between nodes and target
+  tpg._bind(f._graph);
+  //for(auto &s: tpg._sources) {
+  //  predicate_node->precede(*s);
+  //}
+  predicate_node->set_pipeline();
+
+  _schedule(*predicate_node);
+
+  return tpg._future;
+}
+
+
 // Constructor
 template <template <typename...> typename E>
 BasicTaskflow<E>::Closure::Closure(BasicTaskflow& t, Node& n) : 
@@ -382,7 +452,134 @@ BasicTaskflow<E>::Closure::Closure(BasicTaskflow& t, Node& n) :
 
 // Operator ()
 template <template <typename...> typename E>
-void BasicTaskflow<E>::Closure::operator () () const {
+void BasicTaskflow<E>::Closure::operator () () {
+   if(node->is_pipeline()) {
+    pipeline_mode();
+  }
+  else {
+    normal_mode();
+  }
+}
+
+// Pipeline mode
+template <template <typename...> typename E>
+void BasicTaskflow<E>::Closure::pipeline_mode() {
+  bool last_pipe {false};
+  const auto num_successors = node->num_successors();
+ 
+  do {
+    if(node->_num_dependents == -1) {
+      if(node->_cur_pipeline == node->_topology->_num_pipeline) {
+        return ;
+      }
+      else {
+        auto stop = std::invoke(node->_topology->_predicate); 
+        if(!stop) {
+          node->_topology->_num_pipeline ++;
+        }
+
+        for(auto &s: node->_topology->_sources) {
+          //if(--s->_num_dependents == 0) {
+          //  s->_num_dependents = s->_dependents.size(); 
+            if(s->_num_run.fetch_add(1) == 0) {
+              s->set_pipeline();
+              s->_num_dependents = 0;
+              taskflow->_schedule(*s);
+            }
+          //}
+        }                                          
+        node->_cur_pipeline ++;
+        //node->_num_run = 10;
+        continue;
+      }
+    }
+    else {
+
+      node->_num_dependents = 0;
+
+      //if(node->_subgraph.has_value()) {
+      //  //node->_subgraph.reset();
+      //  node->unset_spawned();
+      //}
+
+      if(!node->is_spawned()) {
+        Graph subgraph;
+        if(node->_subgraph.has_value() && !node->_subgraph->empty()) {
+          subgraph.splice(subgraph.begin(), node->_subgraph.value());
+          node->_subgraph.reset();
+        }
+        //if(auto joined = execute_pipeline_node(); joined) {
+        //std::cout << "To execute node ==========  " << node->_name << std::endl;
+        //if(auto joined = execute_node(); joined) {
+        if(auto joined = execute_pipeline_task(subgraph); joined) {
+          std::puts("Join mode");
+          // Recover must be done before scheduling the subgraph, 
+          // otherwise u will have race condition 
+
+          ////node->_round.fetch_sub(1);
+          //if(!backup.empty()) {
+          //  if(!node->_subgraph.has_value()) {
+          //    node->_subgraph.emplace();
+          //  }
+          //  node->_subgraph->splice(node->_subgraph->begin(), backup);
+          //}
+          ////assert(node->_round > 0);
+          return ;
+        }
+        if(!subgraph.empty()) {
+          if(!node->_subgraph.has_value()) {
+            node->_subgraph.emplace();
+          }
+          node->_subgraph.value().splice(node->_subgraph.value().begin(), subgraph);
+        }
+      }
+
+      node->unset_spawned();
+
+      if(++node->_cur_pipeline == node->_topology->_num_pipeline) {
+        last_pipe = true;
+        node->_num_dependents = node->_dependents.size();
+        node->_cur_pipeline = 0;
+        node->_num_run = 0;
+        node->unset_pipeline();
+      }
+
+      for(size_t i=0; i<node->num_successors(); ++i) {
+        //if(--(node->_successors[i]->_num_dependents) == 0) {
+        //  node->_successors[i]->_num_dependents = node->_successors[i]->_dependents.size();
+          if(node->_successors[i]->_num_run.fetch_add(1) == 0) {
+            //std::cout << "Schedule " << node->_successors[i]->_name << std::endl; 
+            node->_successors[i]->set_pipeline();
+            node->_successors[i]->_num_dependents = 0;
+            taskflow->_schedule(*(node->_successors[i]));
+          }
+        //}
+      }
+      //if(node->num_successors() == 0) {
+      if(num_successors == 0) {
+        //if(++node->_cur == node->_topology->_num_run) {
+        if(last_pipe) {
+         //if(node->num_successors() == 0) {
+          if(--(node->_topology->_num_sinks) == 0) {
+            if(node->_topology->_work != nullptr) {
+              printf("Final set value\n");
+              //std::puts("Final set value");
+              std::invoke(node->_topology->_work);
+            }
+          }
+          //no_check = true;
+        }
+      }
+
+    }  // End of else
+
+  } while(!last_pipe && node->_num_run.fetch_sub(1) != 1);
+}
+
+
+// Normal mode
+template <template <typename...> typename E>
+void BasicTaskflow<E>::Closure::normal_mode() {
 
   // Here we need to fetch the num_successors first to avoid the invalid memory
   // access caused by topology clear.
@@ -475,6 +672,72 @@ void BasicTaskflow<E>::Closure::operator () () const {
       }
     }
   }
+}
+
+
+template <template <typename...> typename E>
+bool BasicTaskflow<E>::Closure::execute_pipeline_task(Graph& subgraph) {
+  // regular node type
+  // The default node work type. We only need to execute the callback if any.
+  if(auto index=node->_work.index(); index == 0) {
+    if(auto &f = std::get<StaticWork>(node->_work); f != nullptr){
+      std::invoke(f);
+    }
+  }
+  // subflow node type 
+  else {
+    
+    // Clear the subgraph before the task execution
+    if(!node->is_spawned()) {
+      node->_subgraph.emplace();
+    }
+   
+    SubflowBuilder fb(*(node->_subgraph));
+
+    std::invoke(std::get<DynamicWork>(node->_work), fb);
+    
+    // Need to create a subflow if first time & subgraph is not empty 
+    if(!node->is_spawned()) {
+      node->set_spawned();
+      if(!node->_subgraph->empty()) {
+        // For storing the source nodes
+        PassiveVector<Node*> src; 
+        for(auto& n : *(node->_subgraph)) {
+          n._topology = node->_topology;
+          n.set_subtask();
+          if(n.num_successors() == 0) {
+            if(fb.detached()) {
+              node->_topology->_num_sinks ++;
+            }
+            else {
+              n.precede(*node);
+            }
+          }
+          if(n.num_dependents() == 0) {
+            src.push_back(&n);
+          }
+        }
+
+        if(!fb.detached()) {
+          if(!subgraph.empty()) {
+            if(!node->_subgraph.has_value()) {
+              node->_subgraph.emplace();
+            }
+            node->_subgraph->splice(node->_subgraph->begin(), subgraph);
+          }
+        }
+
+        taskflow->_schedule(src);
+
+        if(!fb.detached()) {
+          // Return true only when joining with parent
+          return true;
+        }
+      }
+    }
+  } // End of DynamicWork -----------------------------------------------------
+  
+  return false;
 }
 
 // ============================================================================

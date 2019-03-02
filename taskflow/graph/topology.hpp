@@ -53,6 +53,9 @@ class Topology {
 
     void _bind(Graph& g);
     void _recover_num_sinks();
+
+    // Pipeline
+    std::atomic<unsigned> _num_pipeline {1};
 };
 
 // Constructor
