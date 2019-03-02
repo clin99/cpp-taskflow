@@ -4,6 +4,8 @@
 
 namespace tf {
 
+class WorkGroup;
+
 /**
 @class Framework 
 
@@ -20,6 +22,7 @@ class Framework : public FlowBuilder {
   friend class BasicTaskflow;
   
   friend class Topology;
+  friend class WorkGroup;
 
   public:
 
@@ -50,7 +53,13 @@ class Framework : public FlowBuilder {
     */
     size_t num_nodes() const;
 
+    auto& name(const std::string&) ;
+
+    const std::string& name() const ;
+
   private:
+
+    std::string _name;
     
     Graph _graph;
 
@@ -67,6 +76,19 @@ inline Framework::~Framework() {
   assert(_topologies.empty());
 }
 
+// Function: name
+inline auto& Framework::name(const std::string &name) {
+  _name = name;
+  return *this;
+}
+
+// Function: name
+inline const std::string& Framework::name() const {
+  return _name;
+}
+
+
+
 // Function: num_noces
 inline size_t Framework::num_nodes() const {
   return _graph.size();
@@ -74,7 +96,7 @@ inline size_t Framework::num_nodes() const {
 
 // Procedure: dump
 inline void Framework::dump(std::ostream& os) const {
-  os << "digraph Framework {\n";
+  os << "digraph " << _name << " Framework {\n";
   for(const auto& n: _graph) {
     n.dump(os);
   }
@@ -87,6 +109,79 @@ inline std::string Framework::dump() const {
   dump(os);
   return os.str();
 }
+
+
+
+class WorkGroup : public FlowBuilder {
+
+  friend class Topology;
+  
+  template <template<typename...> typename E>  
+  friend class BasicTaskflow;
+
+  public:
+
+    WorkGroup();
+
+    virtual ~WorkGroup();
+
+    using FlowBuilder::silent_emplace;
+    using FlowBuilder::emplace;
+    tf::Task emplace(Framework& framework);
+
+    void dump(std::ostream& ostream) const;
+    
+    std::string dump() const;
+
+
+  protected:
+
+    Graph _graph;
+
+  private:
+
+    std::vector<std::pair<Node*, Framework*>> _pairs;
+
+    std::mutex _mtx;
+    std::list<Topology*> _topologies;
+    Node* _last_target {nullptr};   
+
+    size_t _now_iteration;
+};
+
+// Constructor
+inline WorkGroup::WorkGroup() : FlowBuilder{_graph} {
+}
+
+// Destructor
+inline WorkGroup::~WorkGroup() {
+  assert(_topologies.empty());
+}
+
+
+inline tf::Task WorkGroup::emplace(Framework& framework) {
+  auto task = placeholder();
+  _graph.back().set_workgroup();
+  _pairs.emplace_back(&(_graph.back()), &framework);
+  return task;
+}
+
+// Procedure: dump
+inline void WorkGroup::dump(std::ostream& os) const {
+  os << "digraph WorkGroup {\n";
+  for(const auto& n: _graph) {
+    n.dump(os);
+  }
+  os << "}\n";
+}
+
+// Function: dump
+inline std::string WorkGroup::dump() const { 
+  std::ostringstream os;
+  dump(os);
+  return os.str();
+}
+
 
 }  // end of namespace tf. ---------------------------------------------------
 

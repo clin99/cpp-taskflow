@@ -247,6 +247,10 @@ class BasicTaskflow : public FlowBuilder {
     std::shared_future<void> pipeline_until(Framework& framework, P&& predicate, C&& callable);
 
 
+    template<typename P, typename C>
+    std::shared_future<void> run_until(WorkGroup& workgroup, P&& predicate, C&& callable);
+
+
   private:
     
     Graph _graph;
@@ -384,6 +388,115 @@ std::shared_future<void> BasicTaskflow<E>::run_until(Framework& f, P&& predicate
 
   return tpg._future;
 }
+
+
+
+// Function: run_until
+template <template <typename...> typename E>
+template <typename P, typename C>
+std::shared_future<void> BasicTaskflow<E>::run_until(WorkGroup& wg, P&& predicate, C&& c) {
+  if(std::invoke(predicate)) {
+    return std::async(std::launch::deferred, [](){}).share();
+  }
+
+  // create a topology for this run
+  auto &tpg = _topologies.emplace_back(wg, std::forward<P>(predicate));
+
+
+  // Multi-threaded execution.
+  std::scoped_lock lock(wg._mtx);
+
+  wg._topologies.push_back(&tpg);
+
+  bool run_now = (wg._topologies.size() == 1);
+
+  if(run_now) {
+    tpg._bind(wg._graph);
+  }
+
+  for(auto &p: wg._pairs) {
+    std::get<Node*>(p)->_work = [&, tf=this](auto& subflow) mutable {
+      
+      std::cout << std::get<1>(p)->name() << std::endl;
+
+      auto sink = subflow.placeholder();
+
+      PassiveVector<Node*> src;
+      PassiveVector<Node*> tgt;
+
+      for(auto &n: std::get<tf::Framework*>(p)->_graph) {
+        n._topology = &tpg;
+        if(n.num_dependents() == 0) {
+          src.push_back(&n);
+        }
+        if(n.num_successors() == 0) {
+          n.precede(*(sink._node));
+          tgt.push_back(&n);
+        }
+      }
+
+      sink.work([tgt{std::move(tgt)}](){
+        std::puts("=======>  Clear");
+        //for(auto& t: tgt) {
+        //  t->_successors.clear();
+        //}
+      });
+      subflow.join();
+
+      //subflow.emplace(
+      //  [tf=tf, src{std::move(src)}]() {
+      //    //tf->_schedule(src);
+      //  }
+      //).precede(sink);
+
+      tf->_schedule(src);
+    };
+  }
+
+  tpg._work = [&wg, c=std::forward<C>(c), this] () mutable {
+      
+    // case 1: we still need to run the topology again
+    if(!std::invoke(wg._topologies.front()->_predicate)) {
+      wg._topologies.front()->_recover_num_sinks();
+      _schedule(wg._topologies.front()->_sources); 
+    }
+    // case 2: the final run of this topology
+    else {
+      std::invoke(c);
+
+      wg._mtx.lock();
+
+      // If there is another run (interleave between lock)
+      if(wg._topologies.size() > 1) {
+
+        // Set the promise
+        wg._topologies.front()->_promise.set_value();
+        wg._topologies.pop_front();
+        wg._topologies.front()->_bind(wg._graph);
+        wg._mtx.unlock();
+        _schedule(wg._topologies.front()->_sources);
+      }
+      else {
+        assert(wg._topologies.size() == 1);
+        // Need to back up the promise first here becuz framework might be 
+        // destroy before taskflow leaves
+        auto &p = wg._topologies.front()->_promise; 
+        wg._topologies.pop_front();
+        wg._mtx.unlock();
+       
+        // We set the promise in the end in case framework leaves before taskflow
+        p.set_value();
+      }
+    }
+  };
+
+  if(run_now) {
+    _schedule(tpg._sources);
+  }
+
+  return tpg._future;
+}
+
 
 
 // Function: pipeline_until

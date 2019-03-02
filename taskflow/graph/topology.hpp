@@ -13,6 +13,7 @@ class Topology {
   friend class BasicTaskflow; 
 
   friend class Framework;
+  friend class WorkGroup;
   
   // TODO: make graph/framework handle uniform
   //struct GraphHandle {
@@ -34,12 +35,15 @@ class Topology {
     template <typename P>
     Topology(Framework&, P&&);
 
+    template <typename P>
+    Topology(WorkGroup&, P&&);
+
     std::string dump() const;
     void dump(std::ostream&) const;
 
   private:
 
-    std::variant<Graph, Framework*> _handle;
+    std::variant<Graph, Framework*, WorkGroup*> _handle;
 
     std::promise<void> _promise;
     std::shared_future<void> _future {_promise.get_future().share()};
@@ -57,6 +61,15 @@ class Topology {
     // Pipeline
     std::atomic<unsigned> _num_pipeline {1};
 };
+
+
+// Constructor
+template <typename P>
+inline Topology::Topology(WorkGroup& w, P&& p): 
+  _handle    {&w}, 
+  _predicate {std::forward<P>(p)} {
+}
+
 
 // Constructor
 template <typename P>
@@ -123,6 +136,11 @@ inline void Topology::dump(std::ostream& os) const {
     },
     [&] (const Framework* framework) {
       for(const auto& node : framework->_graph) {
+        node.dump(os);
+      }
+    },
+    [&] (const WorkGroup* workgroup) {
+      for(const auto& node : workgroup->_graph) {
         node.dump(os);
       }
     }
