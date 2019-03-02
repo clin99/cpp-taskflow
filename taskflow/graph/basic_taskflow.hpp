@@ -419,30 +419,62 @@ std::shared_future<void> BasicTaskflow<E>::pipeline_until(Framework& f, P&& pred
 
   f._topologies.push_back(&tpg);
 
+  bool run_now = (f._topologies.size() == 1);
+  if(run_now) {
+    // Clear last execution data & Build precedence between nodes and target
+    tpg._bind(f._graph);
+    assert(tpg._sources.size() == 1);
+  }
+
   //tf::Node* predicate_node = new Node();
   //predicate_node->_topology = &tpg;
   //predicate_node->_num_dependents = -1;
   //tpg._work = [predicate_node, &f, c{std::move(c)}]() {
-  tpg._work = [&f, c{std::move(c)}]() {
+  tpg._work = [&, c = std::forward<C>(c)]() mutable {
     printf("Leave\n");
     //delete predicate_node;
     std::invoke(c);
-    auto tpg = f._topologies.front();
-    f._topologies.pop_front();
-    tpg->_promise.set_value();
+
+    f._mtx.lock();
+    //auto tpg = f._topologies.front();
+    //f._topologies.pop_front();
+    //tpg->_promise.set_value();
+
+    // If there is another run (interleave between lock)
+    if(f._topologies.size() > 1) {
+      // Set the promise
+      f._topologies.front()->_promise.set_value();
+      f._topologies.pop_front();
+      f._topologies.front()->_bind(f._graph);
+      f._mtx.unlock();
+      f._topologies.front()->_sources.front()->set_pipeline();
+      _schedule(f._topologies.front()->_sources);
+    }
+    else {
+      assert(f._topologies.size() == 1);
+      // Need to back up the promise first here becuz framework might be 
+      // destroy before taskflow leaves
+      auto &p = f._topologies.front()->_promise; 
+      f._topologies.pop_front();
+      f._mtx.unlock();
+     
+      // We set the promise in the end in case framework leaves before taskflow
+      p.set_value();
+    }
+
   };
 
-  // Clear last execution data & Build precedence between nodes and target
-  tpg._bind(f._graph);
   //for(auto &s: tpg._sources) {
   //  predicate_node->precede(*s);
   //}
   //predicate_node->set_pipeline();
 
   //_schedule(*predicate_node);
-  
-  tpg._sources.front()->set_pipeline();
-  _schedule(*(tpg._sources.front()));
+ 
+  if(run_now) { 
+    tpg._sources.front()->set_pipeline();
+    _schedule(*(tpg._sources.front()));
+  }
 
   return tpg._future;
 }
