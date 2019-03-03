@@ -162,7 +162,105 @@ constexpr size_t MAX_CHAR_PER_INPUT_SLICE = 4000;
 const std::string InputFileName = "input.txt";
 const std::string OutputFileName = "output.txt";
 
+
+bool input_task(TextSlice **next_slice, spsc_queue<TextSlice*>& input_queue, FILE* input_file) {
+  size_t m = (*next_slice)->avail();
+  size_t n = fread( (*next_slice)->end(), 1, m, input_file );
+  if( !n && (*next_slice)->size()==0 ) {
+    // No more characters to process 
+    return true;
+  } 
+  else {
+    // Have more characters to process.
+    TextSlice& t = **next_slice;
+    *next_slice = TextSlice::allocate( MAX_CHAR_PER_INPUT_SLICE );
+    char* p = t.end()+n;
+    if( n==m ) {
+      // Might have read partial number.  If so, transfer characters of partial number to next slice.
+      while( p>t.begin() && isdigit(p[-1]) ) {
+        --p;
+      }
+      (*next_slice)->append( p, t.end()+n );
+    }
+    t.set_end(p);
+    input_queue.enqueue(&t);
+    return false;
+  }
+}
+
+
+void output_task(TextSlice* input, spsc_queue<TextSlice*>& output_queue) {
+  input->end('\0');
+  char* p = input->begin();
+  TextSlice& out = *TextSlice::allocate( 2*MAX_CHAR_PER_INPUT_SLICE );
+  char* q = out.begin();
+  for(;;) {
+    while( p<(*input).end() && !isdigit(*p) ) { 
+      *q++ = *p++; 
+    }
+    if( p==(*input).end() ) {
+      break;
+    }
+    long x = strtol( p, &p, 10 );
+    // Note: no overflow checking is needed here, as we have twice the 
+    // input string length, but the square of a non-negative integer n 
+    // cannot have more than twice as many digits as n.
+    long y = x*x; 
+    sprintf(q,"%ld",y);
+    q = strchr(q,0);
+  }
+  out.set_end(q);
+  (*input).free();
+
+  output_queue.enqueue(&out);
+}
+
+
+void sequential() {
+  auto t1 = std::chrono::high_resolution_clock::now(); 
+  spsc_queue<TextSlice*> input_queue;
+  spsc_queue<TextSlice*> output_queue;
+  FILE* input_file = fopen( InputFileName.c_str(), "r" );
+  FILE* output_file = fopen( OutputFileName.c_str(), "w" );
+
+  size_t num_inputs {0};
+  TextSlice* next_slice = TextSlice::allocate( MAX_CHAR_PER_INPUT_SLICE );
+  while(!input_task(&next_slice, input_queue, input_file)) {
+    num_inputs ++;
+  }
+
+  auto t2 = std::chrono::high_resolution_clock::now(); 
+
+  for(size_t i=0; i<num_inputs; i++) {
+    TextSlice *slice;
+    assert(input_queue.dequeue(slice));
+    output_task(slice, output_queue);
+  }
+
+  auto t3 = std::chrono::high_resolution_clock::now(); 
+
+  for(size_t i=0; i<num_inputs; i++) {
+    TextSlice* out;
+    assert(output_queue.dequeue(out));
+
+    size_t n = fwrite( out->begin(), 1, out->size(), output_file );
+    if( n!=out->size() ) {
+      fprintf(stderr,"Can't write into file '%s'\n", OutputFileName.c_str());
+      exit(1);
+    }
+    out->free();
+  }
+  auto t4 = std::chrono::high_resolution_clock::now();  
+
+  std::cout << std::chrono::duration_cast<std::chrono::microseconds>(t3 - t2).count()/1000000.0 << std::endl;
+  std::cout << std::chrono::duration_cast<std::chrono::microseconds>(t4 - t1).count()/1000000.0 << std::endl;
+  exit(1);
+}
+
 int main(){
+
+  sequential();
+
 
   auto t1 = std::chrono::high_resolution_clock::now(); 
 
@@ -177,6 +275,7 @@ int main(){
   
   auto [transform, output] = f.emplace( 
     [&] () { 
+
       TextSlice *input;
       assert(input_queue.dequeue(input));
 
@@ -205,6 +304,7 @@ int main(){
       output_queue.enqueue(&out);
     },     
     [&] () { 
+
       TextSlice* out;
       assert(output_queue.dequeue(out));
 
@@ -227,7 +327,6 @@ int main(){
   transform.precede(output);  
 
   TextSlice* next_slice = TextSlice::allocate( MAX_CHAR_PER_INPUT_SLICE );
-
 
   tf.pipeline_until(f, [&]() mutable { 
       // Read characters into space that is available in the next slice.
@@ -262,6 +361,8 @@ int main(){
   auto t2 = std::chrono::high_resolution_clock::now();
   std::cout << std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count()/1000000.0 << std::endl;
 
+  std::fclose(input_file);
+  std::fclose(output_file);
   return 0;
 }
 
